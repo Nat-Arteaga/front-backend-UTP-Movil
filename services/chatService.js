@@ -1,4 +1,5 @@
 const { Pool } = require("pg");
+const mock = require("../mock/mockData");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -21,71 +22,71 @@ function reportarMensaje(msgId, chatId) {
 // CHATS / CONTACTOS
 // ─────────────────────────────────────────────────────────────
 async function getChatsDeUsuario(userId) {
-  const res = await pool.query(
-    `SELECT 
-      c.id_chat AS id,
-      CASE 
-        WHEN c.tipo_chat = 'privado' THEN u2.username
-        ELSE c.nombre
-      END AS nombre,
-      CASE 
-        WHEN c.tipo_chat = 'privado' THEN 'amigo'
-        ELSE 'grupo'
-      END AS tipo,
-      COALESCE(u2.estado, 'Ausente') AS estado,
-      0 AS "mensajesNoLeidos"
-    FROM participantes_chat pc
-    JOIN chats c ON c.id_chat = pc.id_chat
-    LEFT JOIN chats_privados cp ON cp.id_chat = c.id_chat
-    LEFT JOIN usuarios u2 ON (
-      u2.codigo_usu = cp.id_usuario_1 AND cp.id_usuario_1 != $1
-      OR
-      u2.codigo_usu = cp.id_usuario_2 AND cp.id_usuario_2 != $1
-    )
-    WHERE pc.codigo_usu = $1 AND pc.estado = 'activo'`,
-    [userId]
-  );
-  return res.rows;
+  // Siempre devuelve el mock por ahora
+  return mock.contactos;
 }
 
 // ─────────────────────────────────────────────────────────────
 // MENSAJES
 // ─────────────────────────────────────────────────────────────
 async function getMensajes(chatId) {
-  const res = await pool.query(
-    `SELECT 
-      m.id_mensaje AS id,
-      m.id_chat AS "chatId",
-      m.contenido AS texto,
-      TO_CHAR(m.fecha_envio, 'HH12:MI AM') AS hora,
-      m.codigo_usu AS "remitenteId",
-      u.username AS remitente,
-      m.eliminado,
-      false AS mio
-    FROM mensajes m
-    JOIN usuarios u ON u.codigo_usu = m.codigo_usu
-    WHERE m.id_chat = $1
-    ORDER BY m.fecha_envio ASC
-    LIMIT 50`,
-    [chatId]
-  );
-  return res.rows;
+  // Si es el grupo General UTP+ → carga desde BD
+  if (String(chatId) === "4") {
+    const res = await pool.query(
+      `SELECT 
+        m.id_mensaje AS id,
+        m.id_chat AS "chatId",
+        m.contenido AS texto,
+        TO_CHAR(m.fecha_envio, 'HH12:MI AM') AS hora,
+        m.codigo_usu AS "remitenteId",
+        u.username AS remitente,
+        m.eliminado,
+        false AS mio
+      FROM mensajes m
+      JOIN usuarios u ON u.codigo_usu = m.codigo_usu
+      WHERE m.id_chat = $1 AND m.eliminado = false
+      ORDER BY m.fecha_envio ASC
+      LIMIT 50`,
+      [chatId]
+    );
+    return res.rows;
+  }
+
+  // Para los demás chats → mock
+  return mock.conversaciones[chatId] || mock.conversaciones.default;
 }
 
 async function guardarMensaje({ chatId, texto, remitenteId, remitente }) {
-  const res = await pool.query(
-    `INSERT INTO mensajes (id_chat, codigo_usu, contenido, tipo_mensaje)
-     VALUES ($1, $2, $3, 'texto')
-     RETURNING id_mensaje AS id, id_chat AS "chatId", contenido AS texto,
-               TO_CHAR(fecha_envio, 'HH12:MI AM') AS hora, codigo_usu AS "remitenteId"`,
-    [chatId, remitenteId, texto]
-  );
-  const msg = res.rows[0];
+  const ahora = new Date();
+  const hora = ahora.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" });
+
+  // Si es el grupo General UTP+ → guarda en BD
+  if (String(chatId) === "4") {
+    const res = await pool.query(
+      `INSERT INTO mensajes (id_chat, codigo_usu, contenido, tipo_mensaje)
+       VALUES ($1, $2, $3, 'texto')
+       RETURNING id_mensaje AS id, id_chat AS "chatId", contenido AS texto,
+                 TO_CHAR(fecha_envio, 'HH12:MI AM') AS hora, codigo_usu AS "remitenteId"`,
+      [chatId, remitenteId, texto]
+    );
+    const msg = res.rows[0];
+    return {
+      ...msg,
+      remitente: remitente || "Usuario",
+      mio: false,
+      eliminado: false,
+    };
+  }
+
+  // Para los demás chats → mock
   return {
-    ...msg,
-    remitente: remitente || "Usuario",
+    id: Date.now(),
+    chatId,
+    texto,
+    hora,
     mio: false,
-    eliminado: false,
+    remitente: remitente || "Usuario",
+    remitenteId: remitenteId || null,
   };
 }
 
