@@ -94,6 +94,15 @@ app.post("/api/registro", async (req, res) => {
       ]
     );
 
+    // Agregar automáticamente al usuario nuevo al grupo General UTP+ (id_chat = 4)
+    await client.query(
+      `
+      INSERT INTO participantes_chat (id_chat, codigo_usu)
+      VALUES (4, $1)
+      `,
+      [codigo_usu]
+    );
+
     await client.query("COMMIT");
 
     res.json({
