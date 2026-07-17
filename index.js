@@ -7,6 +7,7 @@
 
 require("dotenv").config();
 const crypto = require("crypto");
+const bcrypt = require("bcrypt");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -34,14 +35,30 @@ const pool = new Pool({
 
 // ── Rutas existentes (no se tocan) ──────────────────────────────
 app.post("/api/registro", async (req, res) => {
-  const { nombre_usuario, genero, intereses, carrera, ciclo } = req.body;
+  const { nombre_usuario, genero, intereses, carrera, ciclo, codigo_estudiante, password } = req.body;
 
   const cleanUser = (nombre_usuario || "").trim();
+  const cleanCodigo = (codigo_estudiante || "").trim().toUpperCase();
 
   if (!cleanUser) {
     return res.status(400).json({
       success: false,
       error: "Falta el nombre de usuario",
+    });
+  }
+
+  // El código de estudiante debe tener el formato U + 8 dígitos (ej. U12345678)
+  if (!/^U\d{8}$/.test(cleanCodigo)) {
+    return res.status(400).json({
+      success: false,
+      error: "El código de estudiante debe ser una U seguida de 8 números (ej. U12345678)",
+    });
+  }
+
+  if (!password || password.length < 6) {
+    return res.status(400).json({
+      success: false,
+      error: "La contraseña debe tener al menos 6 caracteres",
     });
   }
 
@@ -63,6 +80,22 @@ app.post("/api/registro", async (req, res) => {
         error: "Ese nombre de usuario ya está en uso. Elige otro.",
       });
     }
+
+    // 🔒 Un mismo código de estudiante no puede tener dos cuentas
+    const codigoExistente = await client.query(
+      `SELECT codigo_usu FROM usuarios WHERE UPPER(correo) = $1`,
+      [cleanCodigo]
+    );
+
+    if (codigoExistente.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        error: "Ya existe una cuenta creada con ese código de estudiante.",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
 
     const usuario = await client.query(
       `
@@ -87,8 +120,8 @@ app.post("/api/registro", async (req, res) => {
         cleanUser,
         "",
         cleanUser,
-        `${cleanUser}@utpmovil.local`,
-        "",
+        cleanCodigo,
+        passwordHash,
         true,
         "activo",
       ]
@@ -261,6 +294,80 @@ app.post("/api/sesion/cerrar", async (req, res) => {
   try {
     await pool.query(`UPDATE sesiones SET activo = false WHERE token = $1`, [token]);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Login real: código de estudiante + contraseña. El SSO de la UTP ya sirvió
+// como filtro (solo estudiantes llegan hasta aquí); esta es la credencial
+// que de verdad identifica la cuenta dentro de la app.
+app.post("/api/auth/login", async (req, res) => {
+  const { codigo_estudiante, password } = req.body;
+  const cleanCodigo = (codigo_estudiante || "").trim().toUpperCase();
+
+  if (!cleanCodigo || !password) {
+    return res.status(400).json({
+      success: false,
+      error: "Ingresa tu código de estudiante y tu contraseña",
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        u.codigo_usu,
+        u.username,
+        u.password_hash,
+        p.carrera,
+        p.ciclo,
+        p.genero,
+        p.intereses
+      FROM usuarios u
+      LEFT JOIN perfil_usuario p ON p.codigo_usu = u.codigo_usu
+      WHERE UPPER(u.correo) = $1
+      `,
+      [cleanCodigo]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ success: false, error: "Código o contraseña incorrectos" });
+    }
+
+    const fila = result.rows[0];
+    const coincide = await bcrypt.compare(password, fila.password_hash || "");
+
+    if (!coincide) {
+      return res.status(401).json({ success: false, error: "Código o contraseña incorrectos" });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const dispositivo = req.headers["user-agent"] || null;
+    const ip = req.ip || null;
+
+    await pool.query(
+      `
+      INSERT INTO sesiones (codigo_usu, token, dispositivo, ip, fecha_expiracion, activo)
+      VALUES ($1, $2, $3, $4, NOW() + INTERVAL '90 days', true)
+      `,
+      [fila.codigo_usu, token, dispositivo, ip]
+    );
+
+    res.json({
+      success: true,
+      userId: fila.codigo_usu,
+      nombre_usuario: fila.username,
+      token,
+      perfil: {
+        codigo_usu: fila.codigo_usu,
+        username: fila.username,
+        carrera: fila.carrera,
+        ciclo: fila.ciclo,
+        genero: fila.genero,
+        intereses: fila.intereses,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
