@@ -21,46 +21,37 @@ function reportarMensaje(msgId, chatId) {
 // CHATS / CONTACTOS (100% BD: grupos + privados)
 // ─────────────────────────────────────────────────────────────
 async function getChatsDeUsuario(userId) {
-  // Grupos donde el usuario es participante
-  const grupos = await pool.query(
-    `
-    SELECT
-      c.id_chat AS id,
-      c.nombre AS nombre,
-      'grupo' AS tipo,
-      NULL AS avatar,
-      'activo' AS estado
-    FROM chats c
-    JOIN participantes_chat pc ON pc.id_chat = c.id_chat
-    WHERE pc.codigo_usu = $1
-      AND c.tipo_chat = 'grupo'
-      AND pc.estado = 'activo'
-    `,
-    [userId]
-  );
-
-  // Chats privados (1 a 1) donde el usuario participa
-  const privados = await pool.query(
-    `
-    SELECT
-      c.id_chat AS id,
-      u.username AS nombre,
-      'amigo' AS tipo,
-      u.foto_perfil AS avatar,
-      u.estado AS estado
-    FROM chats_privados cp
-    JOIN chats c ON c.id_chat = cp.id_chat
-    JOIN usuarios u
-      ON u.codigo_usu = CASE
-        WHEN cp.id_usuario_1 = $1 THEN cp.id_usuario_2
-        ELSE cp.id_usuario_1
-      END
-    WHERE cp.id_usuario_1 = $1 OR cp.id_usuario_2 = $1
-    `,
-    [userId]
-  );
-
-  return [...grupos.rows, ...privados.rows];
+  try {
+    const res = await pool.query(
+      `SELECT 
+        c.id_chat AS id,
+        CASE 
+          WHEN c.tipo_chat = 'privado' THEN u2.username
+          ELSE c.nombre
+        END AS nombre,
+        CASE 
+          WHEN c.tipo_chat = 'privado' THEN 'amigo'
+          ELSE 'grupo'
+        END AS tipo,
+        COALESCE(u2.estado, 'Ausente') AS estado,
+        0 AS "mensajesNoLeidos"
+      FROM participantes_chat pc
+      JOIN chats c ON c.id_chat = pc.id_chat
+      LEFT JOIN chats_privados cp ON cp.id_chat = c.id_chat
+      LEFT JOIN usuarios u2 ON (
+        (u2.codigo_usu = cp.id_usuario_1 AND cp.id_usuario_1 != $1)
+        OR
+        (u2.codigo_usu = cp.id_usuario_2 AND cp.id_usuario_2 != $1)
+      )
+      WHERE pc.codigo_usu = $1 AND pc.estado = 'activo'
+      ORDER BY c.tipo_chat DESC`,
+      [userId]
+    );
+    return res.rows;
+  } catch (err) {
+    console.error("[getChatsDeUsuario] Error:", err.message);
+    return mock.contactos; // fallback al mock si falla
+  }
 }
 
 // Obtiene (o crea) el chat privado entre dos usuarios
