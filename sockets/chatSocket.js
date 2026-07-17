@@ -204,7 +204,49 @@ module.exports = function registrarSocketsChat(io) {
         });
       }
     });
+    // ── Crear chat privado ────────────────────────────────────────
+    socket.on("chat:crear", async ({ userId1, userId2 }) => {
+      try {
+        // Verificar si ya existe
+        const existe = await pool.query(
+          `SELECT cp.id_chat FROM chats_privados cp
+          WHERE (cp.id_usuario_1 = $1 AND cp.id_usuario_2 = $2)
+          OR (cp.id_usuario_1 = $2 AND cp.id_usuario_2 = $1)`,
+          [userId1, userId2]
+        );
 
+        if (existe.rows.length > 0) {
+          socket.emit("chat:creado", { chatId: existe.rows[0].id_chat });
+          return;
+        }
+
+        // Crear nuevo chat
+        const nuevoChat = await pool.query(
+          `INSERT INTO chats (nombre, tipo_chat, creado_por)
+          VALUES ('Chat privado', 'privado', $1)
+          RETURNING id_chat`,
+          [userId1]
+        );
+        const chatId = nuevoChat.rows[0].id_chat;
+
+        await pool.query(
+          `INSERT INTO participantes_chat (id_chat, codigo_usu) VALUES ($1, $2), ($1, $3)`,
+          [chatId, userId1, userId2]
+        );
+
+        await pool.query(
+          `INSERT INTO chats_privados (id_chat, id_usuario_1, id_usuario_2) VALUES ($1, $2, $3)`,
+          [chatId, userId1, userId2]
+        );
+
+        socket.emit("chat:creado", { chatId });
+        console.log(`[chat] Chat privado creado: ${chatId} entre ${userId1} y ${userId2}`);
+
+      } catch (err) {
+        console.error("[chat:crear] Error:", err.message);
+        socket.emit("chat:error", { mensaje: "No se pudo crear el chat" });
+      }
+    });
     // ── Desconexión ───────────────────────────────────────────────
     socket.on("disconnect", async () => {
       const { userId, nombre } = socket.data;
