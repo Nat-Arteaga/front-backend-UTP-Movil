@@ -206,6 +206,7 @@ module.exports = function registrarSocketsChat(io) {
     });
     // ── Crear chat privado ────────────────────────────────────────
     socket.on("chat:crear", async ({ userId1, userId2 }) => {
+        console.log(`[chat:crear] userId1: ${userId1}, userId2: ${userId2}`);
       try {
         // Verificar si ya existe
         const existe = await pool.query(
